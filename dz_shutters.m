@@ -1,4 +1,7 @@
-% Shutter EPI excitations. 
+% Shutter EPI excitations.
+% Assumes 90 degree tip; 
+% lower flips should switch to 'st' design of rfShut, 
+% and scale flip accordingly.
 
 % total # of shutters is R*Nshots
 % so the width of each shutter should be FOV/(R*Nshots),
@@ -19,25 +22,19 @@
 
 % dependencies:
 % - JP's RF toolbox (for dzrf)
-% - domintrap.m
-% - dotrap.m
+% - domintrap.m - design trapezoid for a target area under the flat
+%   portion (for non-ramp-sampled pulses).
+% - dotrap.m - design trapezoid for total target area (for rewinders)
 % - Fessler IRT for im (could replace with imagesc)
-% - rf2ppe.m
-% - gr2ppe.m
+% - rf2ppe.m - write rf pulse to Philips PPE
+% - gr2ppe.m - write gradient pulses to Philips PPE
 
 dt = 6.4e-6; % s, dwell times of RF + gradient pulses
 Nshots = 3; % number of shots/EPI segments
-imFOV = 20; % cm, imaging FOV in shuttered dim
-R = 2; % imaging acc factor 
-dosim = true;
-
-gambar = 4257;               % gamma/2pi in Hz/T
-gam = gambar*2*pi;         % gamma in radians/g
-
-quadDes = false; % 
-doSim = false; % do final Bloch simulation
-
-delta_tip = 90; % degrees
+imFOV = 20.2; % cm, imaging FOV in shuttered dim
+R = 4; % imaging acc factor
+doSim = true; % do final Bloch simulation
+flip = 30; % flip angle
 
 tbw = [4 6]; % time bandwidth in slice, shutter dims
 dthick = [0.2 imFOV/(R*Nshots)]; % slice thickness, shutter width
@@ -57,17 +54,27 @@ Ntz = length(gpos);
 % design slice-selective subpulse
 rfSl = real(dzrf(Ntz-2*ramppts+1,tbw(1),'st','ls',0.01,0.01)); % arb units
 % normalize to one radian flip
-rfSl = rfSl./sum(rfSl); 
+rfSl = rfSl./sum(rfSl);
 
 % design the shutter envelope
-rfShut = real(dzrf(kw(2)*Nshots*dthick(2),tbw(2),'ex','ls',0.01,0.01)); % radians
+if flip == 90
+    rfShut = real(dzrf(round(kw(2)*Nshots*dthick(2)),tbw(2),'ex','ls',0.01,0.01)); % radians
+else
+    rfShut = real(dzrf(round(kw(2)*Nshots*dthick(2)),tbw(2),'st','ls',0.01,0.01)); % arb units
+    % normalize to target flip
+    rfShut = rfShut./sum(rfShut)*flip*pi/180;
+    %rfShut(1:2:end) = 0;
+end
 
 % construct the pulse with gaps for ramps
 rfEP = kron(rfShut,[zeros(1,ramppts) rfSl zeros(1,ramppts-1)]);
 ttipdown = length(rfEP)/2*dt*1000; % time into the pulse at which TE should start (ms) - calculate before we add rewinder zeros
 
 % build total gz gradient waveform
-gzEP = kron(ones(1,length(rfShut)/2),[gpos -gpos]);
+gzEP = kron(ones(1,floor(length(rfShut)/2)),[gpos -gpos]);
+if rem(length(rfShut),2)
+    gzEP = [gzEP gpos];
+end
 
 % get the gy blips
 gyBlip = dotrap(1/(Nshots*dthick(2))/4257,gymax,gslew,dt);
@@ -81,7 +88,7 @@ gyEP = [gyEP zeros(1,length(gzEP)-length(gyEP))];
 
 % calculate and add rewinders
 gzRew = dotrap(sum(gpos)*dt/2,gzmax,gslew,dt);
-gzEP = [gzEP gzRew];
+gzEP = [gzEP ((-1)^rem(length(rfShut),2))*gzRew];
 gyRew = -dotrap(sum(gyBlip)*dt*(length(rfShut)-1)/2,gymax,gslew,dt);
 gyEP = [gyEP gyRew];
 
@@ -92,7 +99,10 @@ gEP = [gzEP(:) gyEP(:)]; % stick them together into matrix
 rfEP = [rfEP(:); zeros(size(gEP,1)-length(rfEP),1)];
 
 % calculate FM waveform for slice-shifting
-rfFM = repmat([ones(Ntz,1);-ones(Ntz,1)],[length(rfShut)/2 1]);
+rfFM = repmat([ones(Ntz,1);-ones(Ntz,1)],[floor(length(rfShut)/2) 1]);
+if rem(length(rfShut),2)
+    rfFM = [rfFM;ones(Ntz,1)];
+end
 rfFM = [rfFM; zeros(length(rfEP)-length(rfFM),1)];
 
 % calculate the phases to shift the slab to the other locations
@@ -132,17 +142,24 @@ xlabel 'ms',ylabel 'Radians'
 title 'Phase waveforms to shift shutter to each location (one per shot)'
 c = axis; axis([c(1) c(2) -4 4]);
 
-if dosim
-  disp 'Bloch-simulating final pulses'
-  mxy = blochsim_spinor(rfEP/(2*pi*4257*dt),gEP,[10*dthick(1) dthick(2)*Nshots],[128 128],zeros(128),dt).';
+if doSim
+    disp 'Bloch-simulating final pulses'
+    mxy = blochsim_spinor(rfEP/(2*pi*4257*dt),gEP,...
+        [10*dthick(1) dthick(2)*Nshots],[128 128],zeros(128),dt).';
     figure;im((-64:63)/128*dthick(2)*Nshots,(-64:63)/128*10*dthick(1),mxy);
     xlabel 'y (shutter), cm'
     ylabel 'z (slice), cm'
+    mxyInPlane = zeros(101,101,Nshots); % to match XY's sims
+    for ii = 1:Nshots
+        mxyInPlane(:,:,ii) = blochsim_spinor(rfEP.*exp(1i*rfPhs(ii,:)')/(2*pi*4257*dt),[0*gEP(:,1) gEP(:,2)],...
+            [20.2 20.2],[101 101],zeros(101),dt).';
+    end
+    save(sprintf('dz_shutters_tb%d_nshots%d_R%d',tbw(2),Nshots,R),'mxyInPlane');
 end
 
 % write to philips PPE
 rfAng = sum(rfEP)*180/pi; % convert to degrees
 rf2ppe('shutter_rf.txt',length(rfEP)*dt*1000,rfAng,ttipdown,0,rfEP,rfFM);
 gr2ppe('shutter_grads.txt',size(gEP,1)*dt*1000,ttipdown,10*[gEP zeros(size(gEP,1),1)]);
-        
+
 
