@@ -41,6 +41,9 @@ if ~exist('flip','var')
     flip = 30; % flip angle
 end
 flyback = false;
+delayTolerance = 0; % fraction of nominal kslice width to pad so that
+% the even or odd pulses (or both!) can be delayed without the RF falling
+% down the ramp
 
 tbw = [4 4]; % time bandwidth in slice, shutter dims
 dthick = [0.4 imFOV/(R*Nshots)]; % slice thickness, shutter width (cm)
@@ -51,7 +54,7 @@ gz_area = kw(1) / 4257; % z(slice)-gradient area (g-s/cm)
 gzmax = 4; % g/cm
 gymax = 4; % g/cm
 gslew = 20000; % g/cm/s
-[gpos,ramppts] = domintrap(gz_area,gzmax,gslew,dt); % plateau sums to desired area
+[gpos,ramppts] = domintrap(gz_area*(1+delayTolerance),gzmax,gslew,dt); % plateau sums to desired area
 % remove last point since it is zero and will give two consecutive zeros in
 % total waveform
 gpos = gpos(1:end-1);
@@ -65,7 +68,15 @@ end
 Ntz = length(gpos);
 
 % design slice-selective subpulse
-rfSl = real(dzrf(Ntz-2*ramppts+1-nFlyback,tbw(1),'st','ls',0.01,0.01)); % arb units
+rfSl = real(dzrf(round((Ntz-2*ramppts+1)/(1+delayTolerance))-nFlyback,tbw(1),'st','ls',0.01,0.01)); % arb units
+% zero pad rf back to length of plateau if delayTolerance > 0
+if delayTolerance > 0
+    nPad = floor(((Ntz-2*ramppts+1)-length(rfSl))/2);
+    rfSl = [zeros(1,nPad) rfSl zeros(1,nPad)];
+    if length(rfSl) < Ntz-2*ramppts+1
+        rfSl = [rfSl 0];
+    end
+end
 % normalize to one radian flip
 rfSl = rfSl./sum(rfSl);
 
@@ -80,8 +91,13 @@ end
 %rfShut(1:2:end) = 0; % shut off every other pulse to image odd or even only 
 
 % construct the pulse with gaps for ramps
-rfEP = kron(rfShut,[zeros(1,ramppts) rfSl zeros(1,ramppts-1+nFlyback)]);
-rfEP = rfEP(1:end-nFlyback);
+% flipping the rfSl for Even subpulses accommodates any off-centering of
+% pulse due to earlier unequal zero padding
+rfEPEven = kron(rfShut(2:2:end),[zeros(1,2*ramppts+length(rfSl)-1+nFlyback) zeros(1,ramppts) fliplr(rfSl) zeros(1,ramppts-1+nFlyback)]);
+rfEPOdd = kron(rfShut(1:2:end),[zeros(1,ramppts) rfSl zeros(1,ramppts-1+nFlyback) zeros(1,2*ramppts+length(rfSl)-1+nFlyback)]);
+rfEPEven = rfEPEven(1:end-nFlyback); % we will add half-area z rewinder later
+rfEPOdd= rfEPOdd(1:end-nFlyback);
+rfEP = rfEPEven + rfEPOdd;
 ttipdown = length(rfEP)/2*dt*1000; % time into the pulse at which TE should start (ms) - calculate before we add rewinder zeros
 
 % build total gz gradient waveform
