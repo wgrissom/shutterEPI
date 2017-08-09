@@ -43,7 +43,7 @@ if ~exist('inPlaneSimDim','var')
 end
 imFOV = 0.2*inPlaneSimDim(2); % cm, imaging FOV in shuttered dim
 if ~exist('flip','var')
-    flip = 30; % flip angle
+    flip = 90; % flip angle
 end
 if flip < 90
     pType = 'st';
@@ -55,7 +55,7 @@ delayTolerance = 0; % fraction of nominal kslice width to pad so that
 % the even or odd pulses (or both!) can be delayed without the RF falling
 % down the ramp
 
-tbw = [4 3]; % time bandwidth in slice, shutter dims
+tbw = [4 4]; % time bandwidth in slice, shutter dims
 dthick = [0.1 imFOV/(R*Nshots)]; % slice thickness, shutter width (cm)
 
 kw = tbw ./ dthick; % width of k-space coverage in each dimension (1/cm)
@@ -93,11 +93,12 @@ title 'Phase waveforms to shift shutter to each location (one per shot)'
 c = axis; axis([c(1) c(2) -4 4]);
 
 % write to philips PPE - the first one is real-valued
-rfAng = sum(rfEP)*180/pi; % convert to degrees
+rfAng = sum(rfEP)*2*pi*4258*dt*180/pi; % convert to degrees
 rf2ppe('shutter_rf_shot1.txt',length(rfEP)*dt*1000,rfAng,ttipdown,0,rfEP);
 for ii = 2:Nshots
     rfShift = rfEP.*exp(1i*rfPhs(:,ii));
     rfFM = diff([0;unwrap(angle(rfShift))])/dt/2/pi;
+    rfAng = sum(abs(rfShift))*2*pi*4258*dt*180/pi; % convert to degrees
     rf2ppe(sprintf('shutter_rf_shot%d.txt',ii),length(rfEP)*dt*1000,rfAng,ttipdown,0,abs(rfEP),rfFM);
 end
 gr2ppe('shutter_grads.txt',size(gEP,1)*dt*1000,ttipdown,10*[zeros(size(gEP,1),1) gEP zeros(size(gEP,1),1)]);
