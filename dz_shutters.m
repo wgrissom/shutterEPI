@@ -1,6 +1,6 @@
 % Shutter EPI excitations.
-% Assumes 90 degree tip; 
-% lower flips should switch to 'st' design of rfShut, 
+% Assumes 90 degree tip;
+% lower flips should switch to 'st' design of rfShut,
 % and scale flip accordingly.
 
 % total # of shutters is R*Nshots
@@ -30,23 +30,28 @@
 % - gr2ppe.m - write gradient pulses to Philips PPE
 
 dt = 6.4e-6; % s, dwell times of RF + gradient pulses
-Nshots = 2; % number of shots/EPI segments
-imFOV = 20.2; % cm, imaging FOV in shuttered dim
-R = 4; % imaging acc factor
+Nshots = 4; % number of shots/EPI segments
+extraShotsForOverlap = 1; % # of extra shots to add so we get overlap. 
+% TODO: do we need to overencode if we add a shot? would need it to recon
+% single shot well without overlap, but maybe not if we jointly recon them
+%imFOV = 20.2; % cm, imaging FOV in shuttered dim
+R = 3; % imaging acc factor
 doSim = true; % do final Bloch simulation
 if ~exist('inPlaneSimDim','var')
-    inPlaneSimDim = [101 101]; % default in-plane sim dimensions
+    inPlaneSimDim = [85 96];  % default in-plane sim dimensions. 96 is PE dim,
+                              % which enables Nshots = 2,3,4 and R = 2,4
 end
+imFOV = 0.2*inPlaneSimDim(2); % cm, imaging FOV in shuttered dim. 0.2 comes from res of B1+ maps
 if ~exist('flip','var')
-    flip = 30; % flip angle
+    flip = 90; % flip angle
 end
 flyback = false;
 delayTolerance = 0; % fraction of nominal kslice width to pad so that
 % the even or odd pulses (or both!) can be delayed without the RF falling
 % down the ramp
 
-tbw = [4 4]; % time bandwidth in slice, shutter dims
-dthick = [0.4 imFOV/(R*Nshots)]; % slice thickness, shutter width (cm)
+tbw = [3 3]; % time bandwidth in slice, shutter dims
+dthick = [0.5 imFOV/(R*Nshots)]; % slice thickness, shutter width (cm)
 
 kw = tbw ./ dthick; % width of k-space coverage in each dimension (1/cm)
 
@@ -83,18 +88,26 @@ rfSl = rfSl./sum(rfSl);
 % design the shutter envelope
 if flip == 90
     rfShut = real(dzrf(round(kw(2)*Nshots*dthick(2)),tbw(2),'ex','ls',0.01,0.01)); % radians
-else
+elseif flip == 180
+    rfShut = real(dzrf(round(kw(2)*Nshots*dthick(2)),tbw(2),'se','ls',0.01,0.01)); % radians
+else % small-tip
     rfShut = real(dzrf(round(kw(2)*Nshots*dthick(2)),tbw(2),'st','ls',0.01,0.01)); % arb units
     % scale to target flip
     rfShut = rfShut./sum(rfShut)*flip*pi/180; % radians
 end
-%rfShut(1:2:end) = 0; % shut off every other pulse to image odd or even only 
+%rfShut(1:2:end) = 0; % shut off every other pulse to image odd or even only
 
 % construct the pulse with gaps for ramps
 % flipping the rfSl for Even subpulses accommodates any off-centering of
 % pulse due to earlier unequal zero padding
-rfEPEven = kron(rfShut(2:2:end),[zeros(1,2*ramppts+length(rfSl)-1+nFlyback) zeros(1,ramppts) fliplr(rfSl) zeros(1,ramppts-1+nFlyback)]);
-rfEPOdd = kron(rfShut(1:2:end),[zeros(1,ramppts) rfSl zeros(1,ramppts-1+nFlyback) zeros(1,2*ramppts+length(rfSl)-1+nFlyback)]);
+rfEPEven = kron(rfShut(2:2:end),...
+    [zeros(1,2*ramppts+length(rfSl)-1+nFlyback) zeros(1,ramppts) fliplr(rfSl) zeros(1,ramppts-1+nFlyback)]);
+rfEPOdd = kron(rfShut(1:2:end),...
+    [zeros(1,ramppts) rfSl zeros(1,ramppts-1+nFlyback) zeros(1,2*ramppts+length(rfSl)-1+nFlyback)]);
+if rem(length(rfShut),2)
+    rfEPEven = [rfEPEven zeros(1,2*ramppts+length(rfSl)-1+nFlyback)];
+    rfEPOdd = rfEPOdd(1:end-(2*ramppts+length(rfSl)-1+nFlyback));
+end
 rfEPEven = rfEPEven(1:end-nFlyback); % we will add half-area z rewinder later
 rfEPOdd= rfEPOdd(1:end-nFlyback);
 rfEP = rfEPEven + rfEPOdd;
@@ -112,6 +125,7 @@ else
 end
 
 % get the gy blips
+%gyBlip = dotrap((kw(2)/(length(rfShut)-1))/4257,gymax,gslew,dt);
 gyBlip = dotrap(1/(Nshots*dthick(2))/4257,gymax,gslew,dt);
 if rem(length(gyBlip),2)
     gyBlip = [gyBlip 0]; % add a zero to make it even length
@@ -158,15 +172,15 @@ else
 end
 
 % calculate the phases to shift the slab to the other locations
-phsMtx = angle(exp(1i*2*pi*(0:Nshots-1)'/Nshots*(0:length(rfShut)-1)));
+phsMtx = angle(exp(1i*2*pi*(0:Nshots+extraShotsForOverlap-1)'/(Nshots+extraShotsForOverlap)*(0:length(rfShut)-1)));
 rfPhs = kron(phsMtx,ones(1,Ntz));
 rfPhs = rfPhs(:,1:end-nFlyback);
-rfPhs = [rfPhs zeros(Nshots,length(rfEP)-size(rfPhs,2))];
+rfPhs = [rfPhs zeros(Nshots+extraShotsForOverlap,length(rfEP)-size(rfPhs,2))];
 
 % confirm that the shutters go where we expect
 figure;hold on
 y = (-64:63)/128*Nshots*dthick(2);
-for ii = 1:Nshots
+for ii = 1:Nshots+extraShotsForOverlap
     plot(y,abs(fftshift(fft(rfShut.*exp(1i*phsMtx(ii,:)),128))));
     ylabel 'approx flip angle'
     xlabel 'cm'
@@ -197,22 +211,24 @@ c = axis; axis([c(1) c(2) -4 4]);
 
 if doSim
     disp 'Bloch-simulating final pulses'
-    mxy = blochsim_spinor(rfEP/(2*pi*4257*dt),gEP,...
-        [dthick(2)*Nshots 10*dthick(1)],[128 128],zeros(128),dt).';
+    [mxy,~,alpha,beta] = blochsim_spinor(rfEP/(2*pi*4257*dt),gEP,...
+        [dthick(2)*Nshots 10*dthick(1)],[128 128],zeros(128),dt);
+    mxy = mxy.';
     figure;im((-64:63)/128*10*dthick(1),(-64:63)/128*dthick(2)*Nshots,mxy);
     ylabel 'y (shutter), cm'
     xlabel 'z (slice), cm'
-    mxyInPlane = zeros([inPlaneSimDim Nshots]); % to match XY's sims
-    for ii = 1:Nshots
+    mxyInPlane = zeros([inPlaneSimDim Nshots+extraShotsForOverlap]); % to match XY's sims
+    for ii = 1:Nshots+extraShotsForOverlap
         mxyInPlane(:,:,ii) = blochsim_spinor(rfEP.*exp(1i*rfPhs(ii,:)')/(2*pi*4257*dt),[0*gEP(:,2) gEP(:,1)],...
             [20.2 20.2],inPlaneSimDim,zeros(inPlaneSimDim),dt);
     end
     save(sprintf('dz_shutters_tb%d_nshots%d_R%d',tbw(2),Nshots,R),'mxyInPlane');
 end
 
+% save pulses for LT pTx design testing
+save(sprintf('dz_shutters_tb%d_nshots%d_R%d_pulses',tbw(2),Nshots,R),'rfEP','gEP','dt','dthick','tbw');
+
 % write to philips PPE
 rfAng = sum(rfEP)*180/pi; % convert to degrees
 rf2ppe('shutter_rf.txt',length(rfEP)*dt*1000,rfAng,ttipdown,0,rfEP,rfFM);
 gr2ppe('shutter_grads.txt',size(gEP,1)*dt*1000,ttipdown,10*[zeros(size(gEP,1),1) gEP]);
-
-
