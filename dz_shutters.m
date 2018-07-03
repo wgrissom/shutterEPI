@@ -31,7 +31,8 @@
 
 dt = 6.4e-6; % s, dwell times of RF + gradient pulses
 Nshots = 4; % number of shots/EPI segments
-extraShotsForOverlap = 1; % # of extra shots to add so we get overlap. 
+extraShotsForOverlap = 0; % # of extra shots to add so we get overlap.
+cancelAlphaPhs = false;
 % TODO: do we need to overencode if we add a shot? would need it to recon
 % single shot well without overlap, but maybe not if we jointly recon them
 %imFOV = 20.2; % cm, imaging FOV in shuttered dim
@@ -87,14 +88,36 @@ rfSl = rfSl./sum(rfSl);
 
 % design the shutter envelope
 if flip == 90
+  if ~cancelAlphaPhs
     rfShut = real(dzrf(round(kw(2)*Nshots*dthick(2)),tbw(2),'ex','ls',0.01,0.01)); % radians
+  else
+    [~,bShut] = dzrf(round(kw(2)*Nshots*dthick(2)),tbw(2),'ex','ls',0.01,0.01);
+    Bshut = ft(bShut);
+    Bshut = Bshut.*exp(-1i*2*pi/round(kw(2)*Nshots*dthick(2))*1*(-round(kw(2)*Nshots*dthick(2))/2:round(kw(2)*Nshots*dthick(2))/2-1));
+    bShut = ift(Bshut);
+    aShut = b2a(bShut);
+    bShut = ifft(fft(bShut).*exp(1i*angle(fft(aShut))));
+    rfShut = real(b2rf(bShut));
+  end
 elseif flip == 180
-    rfShut = real(dzrf(round(kw(2)*Nshots*dthick(2)),tbw(2),'se','ls',0.01,0.01)); % radians
+  rfShut = real(dzrf(round(kw(2)*Nshots*dthick(2)),tbw(2),'se','ls',0.01,0.01)); % radians
 else % small-tip
+  if ~cancelAlphaPhs
     rfShut = real(dzrf(round(kw(2)*Nshots*dthick(2)),tbw(2),'st','ls',0.01,0.01)); % arb units
     % scale to target flip
     rfShut = rfShut./sum(rfShut)*flip*pi/180; % radians
+  else
+    bShut = dzrf(round(kw(2)*Nshots*dthick(2)),tbw(2),'st','ls',0.01,0.01); % arb units
+    Bshut = ft(bShut);
+    Bshut = Bshut.*exp(-1i*2*pi/round(kw(2)*Nshots*dthick(2))*1*(-round(kw(2)*Nshots*dthick(2))/2:round(kw(2)*Nshots*dthick(2))/2-1));
+    bShut = ift(Bshut);
+    bShut = bShut*sind(flip/2);
+    aShut = b2a(bShut);
+    bShut = ifft(fft(bShut).*exp(1i*angle(fft(aShut))));
+    rfShut = real(b2rf(bShut)); % radians
+  end
 end
+
 %rfShut(1:2:end) = 0; % shut off every other pulse to image odd or even only
 
 % construct the pulse with gaps for ramps
@@ -181,7 +204,7 @@ rfPhs = [rfPhs zeros(Nshots+extraShotsForOverlap,length(rfEP)-size(rfPhs,2))];
 figure;hold on
 y = (-64:63)/128*Nshots*dthick(2);
 for ii = 1:Nshots+extraShotsForOverlap
-    plot(y,abs(fftshift(fft(rfShut.*exp(1i*phsMtx(ii,:)),128))));
+    plot(y,abs(fftshift(fft(kron(rfShut.*exp(1i*phsMtx(ii,:)),[1 0]),128))));
     ylabel 'approx flip angle'
     xlabel 'cm'
 end
