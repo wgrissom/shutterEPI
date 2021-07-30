@@ -237,9 +237,18 @@ if doSim
     [mxy,~,alpha,beta] = blochsim_spinor(rfEP/(2*pi*4257*dt),gEP,...
         [dthick(2)*Nshots 10*dthick(1)],[128 128],zeros(128),dt);
     mxy = mxy.';
-    figure;im((-64:63)/128*10*dthick(1),(-64:63)/128*dthick(2)*Nshots,mxy);
-    ylabel 'y (shutter), cm'
-    xlabel 'z (slice), cm'
+    beta = beta.';
+    if flip <= 90
+        figure;im((-64:63)/128*10*dthick(1),(-64:63)/128*dthick(2)*Nshots,mxy);
+        ylabel 'y (shutter), cm'
+        xlabel 'z (slice), cm'
+        title 'Excitation profile'
+    else
+        figure;im((-64:63)/128*10*dthick(1),(-64:63)/128*dthick(2)*Nshots,abs(beta).^2);
+        ylabel 'y (shutter), cm'
+        xlabel 'z (slice), cm'
+        title 'Refocusing profile'
+    end
     mxyInPlane = zeros([inPlaneSimDim Nshots+extraShotsForOverlap]); % to match XY's sims
     for ii = 1:Nshots+extraShotsForOverlap
         mxyInPlane(:,:,ii) = blochsim_spinor(rfEP.*exp(1i*rfPhs(ii,:)')/(2*pi*4257*dt),[0*gEP(:,2) gEP(:,1)],...
